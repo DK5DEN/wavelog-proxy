@@ -1,0 +1,69 @@
+# Wavelog Offline-Kit — lokale Instanz für den Laptop (Win/Mac/Linux, Docker Desktop)
+# Setup: siehe README.md — erst `./setup.sh` (bzw. setup.ps1), dann `docker compose up -d`
+services:
+    # MariaDB 11.4 (LTS): NICHT 11.3! Der Server auf ai1 laeuft 11.3, aber die
+    # lokale Kit-DB ist unabhaengig (Sync ueber die API, keine DB-Replikation).
+    # 11.3 hat den Docker-auf-Windows-Crash MDEV-29260 (InnoDB "preallocating ...
+    # failed with error 2" beim ALTER TABLE auf dem WSL2-Dateisystem) und wird
+    # nicht mehr gepatcht; behoben ab 11.4.4. Zusaetzlich native-aio/fsync als
+    # WSL2-I/O-Haertung.
+  wavelog-db:
+    image: mariadb:11.4
+    command: >-
+      --innodb-use-native-aio=0
+      --innodb-flush-method=fsync
+    environment:
+      MARIADB_RANDOM_ROOT_PASSWORD: yes
+      MARIADB_DATABASE: ${LOCAL_DB_NAME:-wavelog}
+      MARIADB_USER: ${LOCAL_DB_USER:-wavelog}
+      MARIADB_PASSWORD: ${LOCAL_DB_PASSWORD:?setup.sh/setup.ps1 zuerst ausfuehren}
+    volumes:
+      - ./data/db:/var/lib/mysql
+    restart: unless-stopped
+
+  # Original-Image, unmodifiziert. Version kommt aus .env (WAVELOG_VERSION) und wird
+  # von setup.sh/setup.ps1 automatisch auf die Master-Version gesetzt (api/version).
+  wavelog:
+    image: ghcr.io/wavelog/wavelog:${WAVELOG_VERSION:-3.0.1}
+    depends_on:
+      - wavelog-db
+    environment:
+      CI_ENV: docker
+      # grosszuegig, damit die lange Erstinstallations-Migration + DXCC-Import
+      # auch auf langsameren Rechnern nicht in ein PHP-Zeitlimit laufen
+      PHP_MAX_EXECUTION_TIME: "1800"
+    volumes:
+      - ./data/config:/var/www/html/application/config/docker
+      - ./data/uploads:/var/www/html/uploads
+      - ./data/userdata:/var/www/html/userdata
+      - ./data/logs:/var/www/html/application/logs
+    restart: unless-stopped
+    # kein Host-Port — Zugriff nur über den sync-Proxy (Injection)
+
+  sync:
+    build: ./sync
+    depends_on:
+      - wavelog
+    env_file: .env
+    environment:
+      # nur für den Reset-Knopf (lokale Daten löschen + neu laden) — der Server
+      # wird ausschliesslich über die offizielle API angesprochen
+      LOCAL_DB_HOST: wavelog-db
+      LOCAL_DB_NAME: ${LOCAL_DB_NAME:-wavelog}
+      LOCAL_DB_USER: ${LOCAL_DB_USER:-wavelog}
+      LOCAL_DB_PASSWORD: ${LOCAL_DB_PASSWORD:-}
+    volumes:
+      - ./data/sync:/state
+      # Code aus dem Ordner statt aus dem Image -> Updates ohne Rebuild:
+      #  - inject.js / status.html aendern: Datei speichern, Browser neu laden (fertig)
+      #  - app.py aendern: `docker compose restart sync`
+      #  - neue Python-Pakete (requirements.txt): `docker compose up -d --build sync`
+      - ./sync/app.py:/app/app.py:ro
+      - ./sync/inject.js:/app/inject.js:ro
+      - ./sync/status.html:/app/status.html:ro
+    ports:
+      - "127.0.0.1:8086:8086"
+    restart: unless-stopped
+
+# wavelog-worker ist für Single-Op-Contest NICHT nötig (nur Multi-User-Live-Updates),
+# siehe https://docs.wavelog.org/wavelog-worker/

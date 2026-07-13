@@ -1,0 +1,6 @@
+# lokale Laufzeitdaten & Konfiguration (nie einchecken)
+.env
+data/
+sync/__pycache__/
+*.pyc
+seed.sql

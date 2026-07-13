@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wavelog Offline-Sync</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 860px;
+         padding: 0 1rem; background: #111827; color: #e5e7eb; }
+  h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.6rem; }
+  button { background: #2563eb; color: #fff; border: 0; border-radius: 6px;
+           padding: .5rem 1rem; margin-right: .5rem; cursor: pointer; font-size: .95rem; }
+  button.secondary { background: #374151; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+  th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #374151; }
+  .warn { background: #78350f; border-radius: 8px; padding: .8rem 1rem; margin: 1rem 0; }
+  .ok { color: #34d399; } .err { color: #f87171; }
+  code { background: #1f2937; padding: 0 .3rem; border-radius: 4px; }
+  a { color: #60a5fa; }
+  #log { white-space: pre-wrap; background: #1f2937; border-radius: 8px;
+         padding: .8rem 1rem; font-family: monospace; font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>Wavelog Offline-Sync <span id="profile" style="font-size:1rem;color:#9ca3af"></span></h1>
+<p id="userpick" style="display:none">Profil: <select id="user_sel" onchange="switchUser()"></select>
+  <input id="user_new" size="10" placeholder="Rufzeichen" style="text-transform:uppercase">
+  <button class="secondary" onclick="newUser()">Neues Profil</button></p>
+<p id="summary">Lade…</p>
+<p>
+  <button onclick="run('sync')">Sync (Push + Pull)</button>
+  <button class="secondary" onclick="run('push')">Nur Push</button>
+  <button class="secondary" onclick="run('pull')">Nur Pull</button>
+</p>
+<div id="contest" style="display:none" class="warn"></div>
+<h2>Ungesyncte QSOs</h2>
+<div id="pending">–</div>
+<h2>Abweichungen (Edits) <button class="secondary" onclick="run('diff')">jetzt prüfen</button></h2>
+<p style="font-size:.85rem;color:#9ca3af">Edits sind über die offizielle Wavelog-API nicht
+übertragbar — Abweichungen zwischen lokal und Server werden hier zum manuellen Nachziehen
+angezeigt. Richtung stammt aus dem Vergleich mit der letzten Prüfung.</p>
+<div id="diff">–</div>
+<h2>Letzter Lauf</h2>
+<div id="log">–</div>
+<h2>Einstellungen</h2>
+<div id="setupHint" style="display:none" class="warn">Noch nicht konfiguriert — Server-URL
+und API-Key eintragen, speichern, dann unten „Server-Bestand übernehmen".</div>
+<table>
+  <tr><td>Server-URL</td><td><input id="cfg_url" size="40" placeholder="https://wavelog.example.org"></td></tr>
+  <tr><td>Server-API-Key <small>(read/write)</small></td><td><input id="cfg_skey" size="40" placeholder="unverändert lassen = leer"></td></tr>
+  <tr><td>Lokaler API-Key <small>(read/write, nach Erstinstallation)</small></td><td><input id="cfg_lkey" size="40" placeholder="unverändert lassen = leer"></td></tr>
+</table>
+<p>
+  <button onclick="saveCfg()">Speichern &amp; testen</button>
+  <button class="secondary" onclick="runSeed()">Server-Bestand übernehmen (Seed)</button>
+  <label style="font-size:.85rem"><input type="checkbox" id="seed_force"> trotz ungesyncter Daten (--force)</label>
+</p>
+<div id="cfgResult"></div>
+<h2>Reparatur</h2>
+<p style="font-size:.85rem;color:#9ca3af">Setzt dieses Profil lokal auf den Stand des
+Servers zurück: alle lokal gespeicherten QSOs, Contest-Sessions und Stationen des Profils
+werden gelöscht und frisch vom Server geladen. Ungesyncte lokale QSOs gehen dabei verloren!</p>
+<p><button style="background:#991b1b" onclick="runReset()">Lokalen Bestand zurücksetzen (Reset)</button></p>
+<style>
+  input { background:#1f2937; color:#e5e7eb; border:1px solid #374151; border-radius:6px; padding:.35rem .5rem; }
+</style>
+<script>
+// Profil (= Rufzeichen des Wavelog-Users) kommt als ?user= — vom injizierten
+// Panel automatisch; bei Direktaufruf über die Profil-Auswahl oben.
+let USER = new URLSearchParams(location.search).get('user') || '';
+const withUser = url => USER ? url + (url.includes('?') ? '&' : '?') + 'user=' + encodeURIComponent(USER) : url;
+function switchUser() {
+  const v = document.getElementById('user_sel').value;
+  if (v) location.search = '?user=' + encodeURIComponent(v);
+}
+function newUser() {
+  const v = document.getElementById('user_new').value.trim().toUpperCase();
+  if (v) location.search = '?user=' + encodeURIComponent(v);
+}
+async function initUser() {
+  const u = await (await fetch('/_sync/api/users')).json();
+  if (!USER && u.users.length === 1) USER = u.users[0];
+  document.getElementById('profile').textContent = USER ? '— Profil ' + USER : '';
+  const pick = document.getElementById('userpick');
+  if (!USER || u.users.length > 1) {
+    pick.style.display = '';
+    document.getElementById('user_sel').innerHTML =
+      '<option value=""></option>' + u.users.map(x =>
+        '<option' + (x === USER ? ' selected' : '') + '>' + x + '</option>').join('');
+  }
+}
+async function refresh() {
+  const p = await (await fetch(withUser('/_sync/api/pending'))).json();
+  const on = p.server_reachable !== false;
+  document.getElementById('summary').innerHTML =
+    'Server: <b class="' + (on ? 'ok' : 'err') + '">' + (on ? 'erreichbar' : 'offline') +
+    '</b> &middot; ungesyncte QSOs: <b>' + p.pending_qsos + '</b>' +
+    ' &middot; ungesyncte Stationen: <b>' + p.stations_unsynced + '</b>' +
+    (p.local_version ? ' &middot; Version lokal: ' + p.local_version +
+      (p.server_version ? ' / Server: ' + p.server_version : '') : '') +
+    (p.last_sync ? ' &middot; letzter Sync: ' + p.last_sync : '') +
+    (p.version_mismatch ? '<br><b class="err">⚠ Versions-Unterschied — auf dem Laptop ' +
+      'setup.sh / setup.ps1 ausführen, um die lokale Instanz nachzuziehen.</b>' : '');
+  const c = document.getElementById('contest');
+  if ((p.contest_import_pending || []).length) {
+    c.style.display = '';
+    c.innerHTML = '⚑ Contest-QSOs wurden gepusht (<b>' + p.contest_import_pending.join(', ') +
+      '</b>). Am Server einmal <a target="_blank" href="' + p.server_url +
+      '/contesting_import">Import Historical Contests</a> ausführen, damit die ' +
+      'Contest-Session dort erscheint. <button class="secondary" onclick="ack()">Erledigt</button>' +
+      '<br><small>Gleiches gilt lokal für vom Server gezogene Contest-QSOs: ' +
+      '<a target="_blank" href="/contesting_import">lokaler Import</a>.</small>';
+  } else { c.style.display = 'none'; }
+  const rows = (p.qsos || []).map(q =>
+    '<tr><td>' + (q.date || '') + ' ' + (q.time || '') + '</td><td>' + (q.call || '') +
+    '</td><td>' + (q.band || '') + '</td><td>' + (q.mode || '') + '</td><td>' +
+    (q.contest || '') + '</td><td>' + (q.station || '') + '</td></tr>').join('');
+  document.getElementById('pending').innerHTML = rows
+    ? '<table><tr><th>Zeit (UTC)</th><th>Call</th><th>Band</th><th>Mode</th><th>Contest</th><th>Station</th></tr>' + rows + '</table>'
+    : 'keine 🎉';
+  if (p.last_result) {
+    document.getElementById('log').textContent =
+      '[' + p.last_result.mode + '] ' + (p.last_result.ok ? 'OK' : 'FEHLER') + '\n' +
+      (p.last_result.log || []).join('\n');
+  }
+  renderDiff();
+}
+async function renderDiff() {
+  const d = (await (await fetch(withUser('/_sync/api/diff'))).json()).last_diff;
+  const el = document.getElementById('diff');
+  if (!d) { el.textContent = 'noch nicht geprüft'; return; }
+  const qso = q => (q.date || '') + ' ' + (q.time || '') + ' ' + (q.call || '') +
+    ' (' + (q.band || '') + ' ' + (q.mode || '') + ', ' + (q.station || '') + ')';
+  let html = '<p>Stand: ' + d.ts + ' — ' + d.total_qsos + ' QSOs verglichen</p>';
+  if (d.diffs.length) {
+    html += '<table><tr><th>QSO</th><th>Feld</th><th>lokal</th><th>Server</th><th>geändert</th></tr>';
+    for (const x of d.diffs)
+      for (const [f, v] of Object.entries(x.fields))
+        html += '<tr><td>' + qso(x) + '</td><td>' + f + '</td><td>' + (v.lokal || '<i>leer</i>') +
+          '</td><td>' + (v.server || '<i>leer</i>') + '</td><td>' + x.edited + '</td></tr>';
+    html += '</table>';
+  }
+  if ((d.time_edits || []).length)
+    html += '<p><b>Vermutlich Zeit-Änderung</b> (gleicher Call/Band/Mode am selben Tag):<br>' +
+      d.time_edits.map(x => (x.date || '') + ' ' + (x.call || '') + ' (' + (x.band || '') + ' ' +
+        (x.mode || '') + ', ' + (x.station || '') + '): lokal ' + (x.zeit_lokal || '?') +
+        ' / Server ' + (x.zeit_server || '?')).join('<br>') + '</p>';
+  if (d.only_local.length)
+    html += '<p><b>Nur lokal</b> (am Server gelöscht oder noch nicht gepusht):<br>' +
+      d.only_local.map(qso).join('<br>') + '</p>';
+  if (d.only_server.length)
+    html += '<p><b>Nur am Server</b> (lokal gelöscht oder noch nicht gepullt):<br>' +
+      d.only_server.map(qso).join('<br>') + '</p>';
+  if (!d.diffs.length && !(d.time_edits || []).length && !d.only_local.length && !d.only_server.length)
+    html += '<p class="ok">keine Abweichungen 🎉</p>';
+  el.innerHTML = html;
+}
+async function run(mode) {
+  document.getElementById('log').textContent = 'läuft…';
+  await fetch(withUser('/_sync/api/sync?mode=' + mode), {method: 'POST'});
+  refresh();
+}
+async function loadCfg() {
+  const c = await (await fetch(withUser('/_sync/api/config'))).json();
+  document.getElementById('cfg_url').value = c.server_url || '';
+  document.getElementById('cfg_skey').placeholder = c.server_api_key_masked
+    ? 'gesetzt (' + c.server_api_key_masked + ') — leer = unverändert' : 'API-Key vom Server';
+  document.getElementById('cfg_lkey').placeholder = c.local_api_key_masked
+    ? 'gesetzt (' + c.local_api_key_masked + ') — leer = unverändert' : 'API-Key der lokalen Instanz';
+  document.getElementById('setupHint').style.display = c.configured ? 'none' : '';
+}
+async function saveCfg() {
+  const r = await (await fetch(withUser('/_sync/api/config'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      user: USER,
+      server_url: document.getElementById('cfg_url').value,
+      server_api_key: document.getElementById('cfg_skey').value,
+      local_api_key: document.getElementById('cfg_lkey').value,
+    })})).json();
+  if (r.error) { document.getElementById('cfgResult').innerHTML = '<b class="err">' + r.error + '</b>'; return; }
+  const s = r.checks.server, l = r.checks.local;
+  document.getElementById('cfgResult').innerHTML =
+    'Server: ' + (s.ok ? '<b class="ok">OK (Wavelog ' + s.version + ')</b>'
+                       : '<b class="err">Fehler</b> ' + (s.error || '')) +
+    ' &middot; Lokal: ' + (l.ok ? '<b class="ok">OK (' + l.stations + ' Station(en), Wavelog ' + l.version + ')</b>'
+                                : '<b class="err">Fehler</b> ' + (l.error || ''));
+  document.getElementById('cfg_skey').value = '';
+  document.getElementById('cfg_lkey').value = '';
+  loadCfg(); refresh();
+}
+async function runSeed() {
+  if (!confirm('Kompletten Server-Bestand in die lokale Instanz übernehmen?')) return;
+  const force = document.getElementById('seed_force').checked ? '&force=1' : '';
+  document.getElementById('log').textContent = 'Seed läuft…';
+  await fetch(withUser('/_sync/api/sync?mode=seed' + force), {method: 'POST'});
+  refresh();
+}
+
+async function ack() {
+  await fetch(withUser('/_sync/api/contest_ack'), {method: 'POST'});
+  refresh();
+}
+async function runReset() {
+  const p = await (await fetch(withUser('/_sync/api/pending'))).json();
+  let msg = 'Profil ' + (USER || p.user || '') + ' lokal auf Server-Stand zurücksetzen?\n\n' +
+    'Alle lokalen QSOs, Contest-Sessions und Stationen dieses Profils werden GELÖSCHT ' +
+    'und neu vom Server geladen.';
+  if (p.pending_qsos) msg += '\n\nACHTUNG: ' + p.pending_qsos + ' ungesyncte QSO(s) gehen dabei verloren!';
+  if (!confirm(msg)) return;
+  if (!confirm('Wirklich sicher? Der Reset kann nicht rückgängig gemacht werden.')) return;
+  document.getElementById('log').textContent = 'Reset läuft…';
+  await fetch(withUser('/_sync/api/sync?mode=reset&force=1'), {method: 'POST'});
+  refresh();
+}
+initUser().then(() => { loadCfg(); refresh(); });
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
