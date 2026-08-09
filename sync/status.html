@@ -36,9 +36,10 @@
 <h2>Ungesyncte QSOs</h2>
 <div id="pending">–</div>
 <h2>Abweichungen (Edits) <button class="secondary" onclick="run('diff')">jetzt prüfen</button></h2>
-<p style="font-size:.85rem;color:#9ca3af">Edits sind über die offizielle Wavelog-API nicht
-übertragbar — Abweichungen zwischen lokal und Server werden hier zum manuellen Nachziehen
-angezeigt. Richtung stammt aus dem Vergleich mit der letzten Prüfung.</p>
+<p style="font-size:.85rem;color:#9ca3af">Feld-Änderungen mit eindeutiger Richtung werden
+automatisch auf die andere Seite übertragen; Konflikte und nicht per API änderbare Felder
+bleiben hier zur manuellen Entscheidung. Erkannte Löschungen werden erst nach Bestätigung
+ausgeführt. Richtung stammt aus dem Vergleich mit der letzten Prüfung.</p>
 <div id="diff">–</div>
 <h2>Letzter Lauf</h2>
 <div id="log">–</div>
@@ -47,9 +48,24 @@ angezeigt. Richtung stammt aus dem Vergleich mit der letzten Prüfung.</p>
 und API-Key eintragen, speichern, dann unten „Server-Bestand übernehmen".</div>
 <table>
   <tr><td>Server-URL</td><td><input id="cfg_url" size="40" placeholder="https://wavelog.example.org"></td></tr>
-  <tr><td>Server-API-Key <small>(read/write)</small></td><td><input id="cfg_skey" size="40" placeholder="unverändert lassen = leer"></td></tr>
-  <tr><td>Lokaler API-Key <small>(read/write, nach Erstinstallation)</small></td><td><input id="cfg_lkey" size="40" placeholder="unverändert lassen = leer"></td></tr>
+  <tr><td>Server-API-Token <small>(APIv2, wl2_… — Scopes qso:read/write/delete, station:read/write, confirmation:read, optional statistic:read)</small></td><td><input id="cfg_skey" size="40" placeholder="unverändert lassen = leer"></td></tr>
+  <tr><td>Server-Legacy-Key <small>(v1, optional — nur für den Versionsabgleich, falls das Token keine Admin-Rechte hat)</small></td><td><input id="cfg_s1key" size="40" placeholder="optional"></td></tr>
+  <tr><td>Lokales API-Token <small>(wird automatisch erstellt)</small></td><td><input id="cfg_lkey" size="40" placeholder="unverändert lassen = leer"></td></tr>
 </table>
+<h3 style="font-size:1rem;margin:.8rem 0 .2rem">Stationen im Sync</h3>
+<div id="stationList"><small>–</small></div>
+<small>Abgewählte Server-Stationen werden nicht gesynct und beim nächsten Sync lokal
+samt QSOs entfernt (der Server bleibt unberührt). Neue Stationen am Server sind
+automatisch angewählt. Gilt nach „Speichern &amp; testen".</small>
+<h3 style="font-size:1rem;margin:.8rem 0 .2rem">Was wird gesynct?</h3>
+<div id="featList">
+  <label style="display:block"><input type="checkbox" checked disabled> QSOs &amp; Stationen (Basis, immer)</label>
+  <label style="display:block"><input type="checkbox" id="f_edits" class="feat"> Änderungen automatisch übertragen (Edit-Sync)</label>
+  <label style="display:block"><input type="checkbox" id="f_del" class="feat"> Löschungen erkennen &amp; übernehmen (mit Bestätigung)</label>
+  <label style="display:block"><input type="checkbox" id="f_qsl" class="feat"> QSL-Bestätigungen (LoTW/eQSL/…) holen</label>
+  <label style="display:block"><input type="checkbox" id="f_ver" class="feat"> Wavelog-Versionsabgleich</label>
+</div>
+<div id="scopeHint" class="warn" style="padding:.5rem .8rem;font-size:.85rem"></div>
 <p>
   <button onclick="saveCfg()">Speichern &amp; testen</button>
   <button class="secondary" onclick="runSeed()">Server-Bestand übernehmen (Seed)</button>
@@ -145,29 +161,91 @@ async function renderDiff() {
       d.time_edits.map(x => (x.date || '') + ' ' + (x.call || '') + ' (' + (x.band || '') + ' ' +
         (x.mode || '') + ', ' + (x.station || '') + '): lokal ' + (x.zeit_lokal || '?') +
         ' / Server ' + (x.zeit_server || '?')).join('<br>') + '</p>';
+  const dels = d.deletions || [];
+  if (dels.length)
+    html += '<p class="warn"><b>' + dels.length + ' Löschung(en) erkannt</b> — auf der Gegenseite bereits gelöscht:<br>' +
+      dels.map(x => (x.action === 'delete_local' ? 'wird LOKAL gelöscht: ' : 'wird am SERVER gelöscht: ') + qso(x)).join('<br>') +
+      '<br><button onclick="applyDeletions()">Löschungen übernehmen…</button></p>';
   if (d.only_local.length)
-    html += '<p><b>Nur lokal</b> (am Server gelöscht oder noch nicht gepusht):<br>' +
+    html += '<p><b>Nur lokal</b> (noch nicht gepusht/unbekannt):<br>' +
       d.only_local.map(qso).join('<br>') + '</p>';
   if (d.only_server.length)
-    html += '<p><b>Nur am Server</b> (lokal gelöscht oder noch nicht gepullt):<br>' +
+    html += '<p><b>Nur am Server</b> (noch nicht gepullt/unbekannt):<br>' +
       d.only_server.map(qso).join('<br>') + '</p>';
-  if (!d.diffs.length && !(d.time_edits || []).length && !d.only_local.length && !d.only_server.length)
+  if (!d.diffs.length && !(d.time_edits || []).length && !dels.length && !d.only_local.length && !d.only_server.length)
     html += '<p class="ok">keine Abweichungen 🎉</p>';
   el.innerHTML = html;
+}
+async function applyDeletions() {
+  let d;
+  try { d = (await (await fetch(withUser('/_sync/api/diff'))).json()).last_diff || {}; } catch (e) { return; }
+  const dels = d.deletions || [];
+  if (!dels.length) return;
+  const lines = dels.map(x => '  ' + (x.action === 'delete_local' ? 'LOKAL:   ' : 'SERVER:  ') +
+    x.date + ' ' + x.time + '  ' + x.call + '  ' + x.band + ' ' + x.mode + '  (' + x.station + ')');
+  const msg = 'Diese ' + dels.length + ' QSO(s) werden ENDGÜLTIG gelöscht:\n\n' + lines.join('\n') +
+    '\n\nLOKAL  = wurde am Server gelöscht, wird jetzt lokal entfernt.' +
+    '\nSERVER = wurde lokal gelöscht, wird jetzt am Server entfernt.' +
+    '\n\nFortfahren?';
+  if (!confirm(msg)) return;
+  const r = await (await fetch(withUser('/_sync/api/apply_deletions'), {method: 'POST'})).json();
+  document.getElementById('log').textContent = '[Löschungen] ' + (r.ok ? 'OK' : 'teilweise FEHLER') + '\n' + (r.log || []).join('\n');
+  refresh();
 }
 async function run(mode) {
   document.getElementById('log').textContent = 'läuft…';
   await fetch(withUser('/_sync/api/sync?mode=' + mode), {method: 'POST'});
   refresh();
 }
+function esc(t) {
+  return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function updateScopes() {
+  const scopes = ['qso:read', 'qso:write', 'station:read', 'station:write'];
+  if (document.getElementById('f_del').checked) scopes.push('qso:delete');
+  if (document.getElementById('f_qsl').checked) scopes.push('confirmation:read');
+  let t = 'Benötigte Scopes für das Server-Token: ' + scopes.join(', ');
+  if (document.getElementById('f_ver').checked)
+    t += ' — für den Versionsabgleich zusätzlich statistic:read (braucht Admin-Rechte) oder den Server-Legacy-Key';
+  document.getElementById('scopeHint').textContent = t;
+}
+document.addEventListener('change', e => {
+  if (e.target.classList && e.target.classList.contains('feat')) updateScopes();
+});
+let stationsLoaded = false;
+async function loadStations() {
+  const el = document.getElementById('stationList');
+  stationsLoaded = false;
+  let d;
+  try {
+    d = await (await fetch(withUser('/_sync/api/stations'))).json();
+  } catch (e) {
+    d = {ok: false, error: 'nicht erreichbar'};
+  }
+  if (!d.ok) { el.innerHTML = '<small>' + esc(d.error || 'nicht verfügbar') + '</small>'; return; }
+  el.innerHTML = d.stations.map(s =>
+    '<label style="display:block"><input type="checkbox" class="stSel" value="' + esc(s.uuid) + '"' +
+    (s.sync ? ' checked' : '') + '> ' + esc(s.name) + ' <small>(' + esc(s.callsign) + ')</small></label>'
+  ).join('') || '<small>keine Stationen am Server</small>';
+  stationsLoaded = true;
+}
 async function loadCfg() {
   const c = await (await fetch(withUser('/_sync/api/config'))).json();
   document.getElementById('cfg_url').value = c.server_url || '';
   document.getElementById('cfg_skey').placeholder = c.server_api_key_masked
-    ? 'gesetzt (' + c.server_api_key_masked + ') — leer = unverändert' : 'API-Key vom Server';
+    ? 'gesetzt (' + c.server_api_key_masked + ') — leer = unverändert' : 'APIv2-Token vom Server (wl2_…)';
+  document.getElementById('cfg_s1key').placeholder = c.server_v1_key_masked
+    ? 'gesetzt (' + c.server_v1_key_masked + ') — leer = unverändert' : 'optional';
   document.getElementById('cfg_lkey').placeholder = c.local_api_key_masked
     ? 'gesetzt (' + c.local_api_key_masked + ') — leer = unverändert' : 'API-Key der lokalen Instanz';
   document.getElementById('setupHint').style.display = c.configured ? 'none' : '';
+  document.getElementById('f_edits').checked = c.sync_edits !== false;
+  document.getElementById('f_del').checked = c.sync_deletions !== false;
+  document.getElementById('f_qsl').checked = c.sync_qsl !== false;
+  document.getElementById('f_ver').checked = c.sync_version !== false;
+  updateScopes();
+  loadStations();
 }
 async function saveCfg() {
   const r = await (await fetch(withUser('/_sync/api/config'), {
@@ -176,16 +254,25 @@ async function saveCfg() {
       user: USER,
       server_url: document.getElementById('cfg_url').value,
       server_api_key: document.getElementById('cfg_skey').value,
+      server_v1_key: document.getElementById('cfg_s1key').value,
+      sync_edits: document.getElementById('f_edits').checked,
+      sync_deletions: document.getElementById('f_del').checked,
+      sync_qsl: document.getElementById('f_qsl').checked,
+      sync_version: document.getElementById('f_ver').checked,
       local_api_key: document.getElementById('cfg_lkey').value,
+      ...(stationsLoaded ? {station_exclude: Array.from(document.querySelectorAll('.stSel'))
+        .filter(cb => !cb.checked).map(cb => cb.value)} : {}),
     })})).json();
   if (r.error) { document.getElementById('cfgResult').innerHTML = '<b class="err">' + r.error + '</b>'; return; }
   const s = r.checks.server, l = r.checks.local;
   document.getElementById('cfgResult').innerHTML =
-    'Server: ' + (s.ok ? '<b class="ok">OK (Wavelog ' + s.version + ')</b>'
+    'Server: ' + (s.ok ? '<b class="ok">OK (' + s.stations + ' Station(en)' +
+                         (s.version ? ', Wavelog ' + s.version : '') + ')</b>'
                        : '<b class="err">Fehler</b> ' + (s.error || '')) +
     ' &middot; Lokal: ' + (l.ok ? '<b class="ok">OK (' + l.stations + ' Station(en), Wavelog ' + l.version + ')</b>'
                                 : '<b class="err">Fehler</b> ' + (l.error || ''));
   document.getElementById('cfg_skey').value = '';
+  document.getElementById('cfg_s1key').value = '';
   document.getElementById('cfg_lkey').value = '';
   loadCfg(); refresh();
 }

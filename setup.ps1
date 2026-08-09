@@ -34,11 +34,18 @@ $cfg = Get-DotEnv
 $publicUrl = if ($cfg['LOCAL_PUBLIC_URL']) { $cfg['LOCAL_PUBLIC_URL'] } else { 'http://localhost:8086' }
 $serverUrl = $cfg['SERVER_URL']; $serverKey = $cfg['SERVER_API_KEY']
 
-# Server-Zugang: UI-Konfiguration (config.json) hat Vorrang vor .env
+
+# Server-Zugang: UI-Konfiguration (config.json) hat Vorrang vor .env.
+# Struktur: { "users": { "RUFZEICHEN": { server_url, server_api_key, ... } } }
+$serverV1Key = $cfg['SERVER_V1_KEY']
 if (Test-Path data/sync/config.json) {
     $ui = Get-Content data/sync/config.json -Raw | ConvertFrom-Json
-    if ($ui.server_url) { $serverUrl = $ui.server_url }
-    if ($ui.server_api_key) { $serverKey = $ui.server_api_key }
+    $profiles = if ($ui.users) { $ui.users.PSObject.Properties | ForEach-Object { $_.Value } } else { @($ui) }
+    foreach ($p in $profiles) {
+        if ($p.server_url) { $serverUrl = $p.server_url }
+        if ($p.server_api_key) { $serverKey = $p.server_api_key }
+        if ($p.server_v1_key) { $serverV1Key = $p.server_v1_key }
+    }
 }
 
 if (-not $cfg['LOCAL_DB_PASSWORD']) {
@@ -54,15 +61,32 @@ New-Item -ItemType Directory -Force data/config, data/uploads, data/userdata, da
 $version = $cfg['WAVELOG_VERSION']; if (-not $version) { $version = '3.0.1' }
 if ($serverUrl -and $serverKey) {
     Write-Host ">> Frage Server-Version ab ($serverUrl)..."
-    try {
-        $resp = Invoke-RestMethod -Method Post -Uri "$serverUrl/api/version" `
-            -ContentType 'application/json' -Body (@{key = $serverKey} | ConvertTo-Json)
-        if ($resp.version) {
-            $version = $resp.version
-            Write-Host ">> Server läuft Wavelog $version — pinne lokales Image darauf"
-            Set-DotEnv 'WAVELOG_VERSION' $version
-        }
-    } catch {
+    $newVersion = $null
+    $v1key = $serverV1Key
+    if ($serverKey -like 'wl2_*') {
+        # APIv2: Version steht in der system-Statistik (braucht Admin-Rechte
+        # und statistic:read — sonst greift unten der Legacy-Fallback)
+        try {
+            $resp = Invoke-RestMethod -Uri "$serverUrl/index.php/api/v2/statistic?profile=system" `
+                -Headers @{ Authorization = "Bearer $serverKey" }
+            if ($resp.data.system.wavelog) { $newVersion = $resp.data.system.wavelog }
+        } catch {}
+    } elseif (-not $v1key) {
+        $v1key = $serverKey
+    }
+    if (-not $newVersion -and $v1key) {
+        # einziger verbliebener v1-Einsatz: Versionsabgleich per Legacy-Key
+        try {
+            $resp = Invoke-RestMethod -Method Post -Uri "$serverUrl/api/version" `
+                -ContentType 'application/json' -Body (@{key = $v1key} | ConvertTo-Json)
+            if ($resp.version) { $newVersion = $resp.version }
+        } catch {}
+    }
+    if ($newVersion) {
+        $version = $newVersion
+        Write-Host ">> Server läuft Wavelog $version — pinne lokales Image darauf"
+        Set-DotEnv 'WAVELOG_VERSION' $version
+    } else {
         Write-Host ">> WARNUNG: Server-Version nicht abrufbar — behalte Version $version"
     }
 } else {
@@ -91,20 +115,11 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host ">> Fertig. Lokales Wavelog: $publicUrl"
     Write-Host "   Sync, Seed und Einstellungen: Usermenü -> 'Offline-Sync' im Wavelog-UI"
 } else {
-    $cfg = Get-DotEnv
     Write-Host ""
-    Write-Host ">> Erstinstallation nötig — einmalig im Browser erledigen:"
-    Write-Host "   1. $publicUrl/install öffnen"
-    Write-Host "      DB-Host:     wavelog-db"
-    $dbName = if ($cfg['LOCAL_DB_NAME']) { $cfg['LOCAL_DB_NAME'] } else { 'wavelog' }
-    $dbUser = if ($cfg['LOCAL_DB_USER']) { $cfg['LOCAL_DB_USER'] } else { 'wavelog' }
-    Write-Host "      DB-Name:     $dbName"
-    Write-Host "      DB-User:     $dbUser"
-    Write-Host "      DB-Passwort: $($cfg['LOCAL_DB_PASSWORD'])"
-    Write-Host "   2. Eigenen Benutzer anlegen (gleiches Rufzeichen wie am Server)"
-    Write-Host "   3. Einloggen, Logbuch anlegen und als aktiv setzen"
-    Write-Host "   4. Account -> API Keys -> Key mit read/write anlegen"
-    Write-Host "   5. Usermenü -> 'Offline-Sync' anklicken -> Einstellungen: Server-URL, Server-API-Key und den"
-    Write-Host "      lokalen Key eintragen -> 'Server-Bestand übernehmen (Seed)' klicken"
-    Write-Host "   6. Dieses Script noch einmal ausführen (pinnt die lokale Version auf die des Servers)"
+    Write-Host ">> Erstinstallation: $publicUrl im Browser öffnen — die Seite fragt die Installationsart ab:"
+    Write-Host "   - Einfach:  nur Rufzeichen (und optional Wunsch-Passwort) eingeben, Rest automatisch"
+    Write-Host "   - Experte:  Wavelog-Installer manuell durchklicken (die Seite zeigt die DB-Daten an)"
+    Write-Host "   Danach im Usermenü 'Offline-Sync' -> Einstellungen: Server-URL und Server-API-Key"
+    Write-Host "   eintragen -> 'Server-Bestand übernehmen (Seed)'. Anschließend dieses Script erneut"
+    Write-Host "   ausführen (pinnt die lokale Wavelog-Version auf die des Servers)."
 }

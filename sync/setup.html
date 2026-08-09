@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wavelog Offline-Kit — Erstinstallation</title>
+<style>
+  body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background:#f2f4f7;margin:0;color:#212529}
+  .wrap{max-width:880px;margin:3rem auto;padding:0 1rem}
+  h1{font-size:1.6rem;text-align:center}
+  p.sub{text-align:center;color:#6c757d}
+  .cards{display:flex;gap:1.5rem;flex-wrap:wrap;margin-top:2rem;align-items:stretch}
+  .card{flex:1 1 340px;background:#fff;border:1px solid #dee2e6;border-radius:.5rem;padding:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .card h2{margin-top:0;font-size:1.15rem}
+  label{display:block;margin:.8rem 0 .25rem;font-weight:600}
+  input,select{width:100%;box-sizing:border-box;padding:.5rem;border:1px solid #ced4da;border-radius:.375rem;font-size:1rem;background:#fff}
+  input.ok{border-color:#198754;outline-color:#198754}
+  input.bad{border-color:#dc3545;outline-color:#dc3545}
+  button,.btn{display:inline-block;margin-top:1.2rem;padding:.55rem 1.2rem;border:0;border-radius:.375rem;background:#0d6efd;color:#fff;font-size:1rem;cursor:pointer;text-decoration:none}
+  button:disabled{background:#8bb4f7;cursor:wait}
+  .btn.gray{background:#6c757d}
+  table{border-collapse:collapse;margin:.5rem 0;width:100%}
+  td{padding:.15rem .5rem .15rem 0;font-family:ui-monospace,Consolas,monospace;font-size:.9rem;word-break:break-all}
+  td:first-child{font-family:inherit;font-weight:600;white-space:nowrap}
+  #progress{display:none;margin-top:2rem}
+  #steps{list-style:none;padding:0;margin:1rem 0}
+  #steps li{padding:.35rem 0;display:flex;align-items:center;gap:.6rem;color:#6c757d}
+  #steps li.done{color:#212529}
+  #steps li.fail{color:#dc3545}
+  .icon{display:inline-flex;width:1.3rem;height:1.3rem;align-items:center;justify-content:center;flex:none;font-weight:700}
+  .icon.pending{color:#adb5bd}
+  .icon.done{color:#198754}
+  .icon.warn{color:#ffc107}
+  .icon.fail{color:#dc3545}
+  .spinner{width:1rem;height:1rem;border:2px solid #dee2e6;border-top-color:#0d6efd;border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  details{margin-top:1rem}
+  details summary{cursor:pointer;color:#6c757d;font-size:.85rem}
+  #log{background:#212529;color:#d6d8db;border-radius:.375rem;padding:1rem;font-family:ui-monospace,Consolas,monospace;font-size:.85rem;white-space:pre-wrap;margin-top:.5rem}
+  .creds{background:#d1e7dd;border:1px solid #a3cfbb;border-radius:.375rem;padding:1rem;margin-top:1rem;display:none}
+  .error{background:#f8d7da;border:1px solid #f1aeb5;border-radius:.375rem;padding:1rem;margin-top:1rem;display:none}
+  .hint{color:#6c757d;font-size:.85rem}
+  code{background:#e9ecef;padding:.1rem .35rem;border-radius:.25rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Wavelog Offline-Kit — Erstinstallation</h1>
+  <p class="sub">Wavelog ist auf diesem Rechner noch nicht eingerichtet. Wie soll installiert werden?</p>
+
+  <div class="cards" id="chooser">
+    <div class="card">
+      <h2>Einfache Installation (empfohlen)</h2>
+      <p>Nur Rufzeichen angeben — Benutzer, aktives Logbuch und Station werden
+         automatisch angelegt. Profildaten (Name, Locator, E-Mail) bekommen
+         Platzhalter und lassen sich später im Account ändern.</p>
+      <label for="callsign">Rufzeichen</label>
+      <input id="callsign" placeholder="z. B. DL1ABC" autocomplete="off" autofocus>
+      <label for="version">Wavelog-Version</label>
+      <select id="version"><option value="">lade Versionen…</option></select>
+      <label for="password">Wunsch-Passwort <span class="hint">(leer = automatisch erzeugen)</span></label>
+      <input id="password" type="password" autocomplete="new-password">
+      <label for="password2">Wunsch-Passwort wiederholen</label>
+      <input id="password2" type="password" autocomplete="new-password">
+      <div id="pwmatch" class="hint" style="margin-top:.3rem"></div>
+      <div class="error" id="formerror"></div>
+      <button id="startBtn">Installieren</button>
+    </div>
+    <div class="card">
+      <h2>Experten-Installation</h2>
+      <p>Den Wavelog-Installer manuell durchklicken. DB-Daten für den Schritt „Database":</p>
+      <table>
+        <tr><td>DB-Host</td><td>%%DB_HOST%%</td></tr>
+        <tr><td>DB-Name</td><td>%%DB_NAME%%</td></tr>
+        <tr><td>DB-User</td><td>%%DB_USER%%</td></tr>
+        <tr><td>DB-Passwort</td><td>%%DB_PASSWORD%%</td></tr>
+      </table>
+      <p class="hint">Danach: Benutzer anlegen (gleiches Rufzeichen wie am Server),
+         einloggen, Logbuch anlegen und als aktiv setzen.</p>
+      <a class="btn gray" id="expertBtn" href="/install/index.php">Wavelog-Installer öffnen</a>
+    </div>
+  </div>
+
+  <div class="card" id="progress">
+    <h2 id="progressTitle">Installation läuft…</h2>
+    <p class="hint">Image-Download (bei Versionswechsel), Datenbank-Schema, Migration und
+       DXCC-Import dauern einige Minuten — Seite einfach geöffnet lassen.</p>
+    <ul id="steps"></ul>
+    <details><summary>Detail-Log anzeigen</summary><div id="log"></div></details>
+    <div class="creds" id="creds"></div>
+    <div class="error" id="runerror"></div>
+  </div>
+</div>
+<script>
+  const $ = id => document.getElementById(id);
+
+  $('expertBtn').addEventListener('click', () => {
+    document.cookie = 'kit_expert=1;path=/;max-age=86400';
+  });
+
+  // Feste Schritt-Liste — die Texte entsprechen exakt den Log-Zeilen,
+  // die app.py (do_autoinstall) meldet
+  const STEPS = [
+    'Wavelog und Datenbank erreichbar',
+    'config.php geschrieben',
+    'database.php geschrieben',
+    'Datenbank-Schema angelegt (User, aktives Logbuch, Station)',
+    'Datenbank migriert',
+    'DXCC-Daten importiert',
+    'Installer gesperrt (.lock)'
+  ];
+
+  function renderSteps(st) {
+    const log = st.log || [];
+    // Plan kommt vom Backend (enthaelt ggf. den Versionswechsel-Schritt);
+    // STEPS ist nur Fallback
+    const steps = (st.plan && st.plan.length) ? st.plan : STEPS;
+    const failed = st.result && !st.result.ok;
+    const dxccWarn = log.some(l => l.startsWith('WARNUNG: DXCC-Import fehlgeschlagen'));
+    let activeShown = false;
+    $('steps').innerHTML = steps.map(step => {
+      let done = log.includes(step);
+      let icon = '<span class="icon pending">○</span>', cls = '';
+      if (step === 'DXCC-Daten importiert' && dxccWarn) {
+        icon = '<span class="icon warn">⚠</span>'; cls = 'done'; done = true;
+      } else if (done) {
+        icon = '<span class="icon done">✓</span>'; cls = 'done';
+      } else if (!activeShown && failed) {
+        icon = '<span class="icon fail">✗</span>'; cls = 'fail'; activeShown = true;
+      } else if (!activeShown && st.running) {
+        icon = '<span class="spinner"></span>'; activeShown = true;
+      }
+      return '<li class="' + cls + '">' + icon + '<span>' + step + '</span></li>';
+    }).join('');
+  }
+
+  function showProgress() {
+    $('chooser').style.display = 'none';
+    $('progress').style.display = 'block';
+  }
+
+  async function poll() {
+    let st;
+    try {
+      st = await (await fetch('/_sync/api/autoinstall')).json();
+    } catch (e) {
+      setTimeout(poll, 3000);
+      return;
+    }
+    renderSteps(st);
+    $('log').textContent = (st.log || []).join('\n') || 'Starte…';
+    if (st.running || !st.result) {
+      setTimeout(poll, 2000);
+      return;
+    }
+    $('progressTitle').textContent = st.result.ok
+      ? 'Installation abgeschlossen' : 'Installation fehlgeschlagen';
+    if (st.result.ok) {
+      // Passwort erscheint nur, wenn es automatisch erzeugt wurde (der User
+      // kennt es sonst nicht) — ein selbst gewaehltes wird nie mehr angezeigt
+      const pwLine = st.password
+        ? 'Passwort: <code>' + st.password + '</code> <span class="hint">(automatisch erzeugt — bitte notieren!)</span><br><br>'
+        : 'Passwort: das von dir gewählte<br><br>';
+      $('creds').style.display = 'block';
+      $('creds').innerHTML = '<b>Fertig!</b><br><br>' +
+        'Benutzer: <code>' + st.result.username + '</code><br>' +
+        pwLine +
+        '<a class="btn" href="/index.php/user/login">Zum Login</a><br><br>' +
+        '<span class="hint">Nach dem Login: Usermenü → „Offline-Sync" → Einstellungen: ' +
+        'Server-URL und Server-API-Key eintragen → „Server-Bestand übernehmen (Seed)".</span>';
+    } else {
+      $('runerror').style.display = 'block';
+      $('runerror').textContent = 'Installation fehlgeschlagen: ' + (st.result.error || 'unbekannter Fehler');
+    }
+  }
+
+  async function start() {
+    $('formerror').style.display = 'none';
+    if ($('password').value !== $('password2').value) {
+      $('formerror').style.display = 'block';
+      $('formerror').textContent = 'Die Passwörter stimmen nicht überein.';
+      return;
+    }
+    $('startBtn').disabled = true;
+    let r, st;
+    try {
+      r = await fetch('/_sync/api/autoinstall', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({callsign: $('callsign').value, password: $('password').value,
+                              version: $('version').value})
+      });
+      st = await r.json();
+    } catch (e) {
+      st = {error: 'Keine Verbindung zum Sync-Proxy'};
+    }
+    if (!r || !r.ok || !st.started) {
+      $('formerror').style.display = 'block';
+      $('formerror').textContent = st.error || 'Start fehlgeschlagen';
+      $('startBtn').disabled = false;
+      return;
+    }
+    showProgress();
+    poll();
+  }
+
+  $('startBtn').addEventListener('click', start);
+  ['callsign', 'password', 'password2'].forEach(id => $(id).addEventListener('keydown', e => {
+    if (e.key === 'Enter') start();
+  }));
+
+  // Live-Abgleich der beiden Passwortfelder waehrend der Eingabe
+  function pwCheck() {
+    const a = $('password').value, b = $('password2').value;
+    const hint = $('pwmatch'), f2 = $('password2');
+    if (!a && !b) {
+      f2.classList.remove('ok', 'bad');
+      hint.textContent = '';
+      return;
+    }
+    if (a === b) {
+      f2.classList.remove('bad'); f2.classList.add('ok');
+      hint.style.color = '#198754';
+      hint.textContent = '✓ Passwörter stimmen überein';
+    } else {
+      f2.classList.remove('ok'); f2.classList.add('bad');
+      hint.style.color = '#dc3545';
+      hint.textContent = '✗ Passwörter stimmen nicht überein';
+    }
+  }
+  $('password').addEventListener('input', pwCheck);
+  $('password2').addEventListener('input', pwCheck);
+
+  // Verfuegbare Wavelog-Versionen laden — Default ist die aktuellste;
+  // offline bleibt nur die bereits laufende Version waehlbar
+  async function loadVersions() {
+    const sel = $('version');
+    try {
+      const v = await (await fetch('/_sync/api/versions')).json();
+      const list = v.versions || [];
+      if (!list.length) throw new Error('keine Versionen');
+      sel.innerHTML = list.map((t, i) =>
+        '<option value="' + t + '">' + t +
+        (i === 0 ? ' (aktuellste)' : '') +
+        (t === v.current ? ' — bereits geladen' : '') +
+        '</option>').join('');
+      sel.selectedIndex = 0;
+    } catch (e) {
+      sel.innerHTML = '<option value="">Standard (Versionsliste nicht abrufbar)</option>';
+    }
+  }
+  loadVersions();
+
+  // Läuft schon eine Installation (z. B. nach Seiten-Reload)? -> Fortschritt zeigen
+  fetch('/_sync/api/autoinstall').then(r => r.json()).then(st => {
+    if (st.running || st.result) { showProgress(); poll(); }
+  }).catch(() => {});
+</script>
+</body>
+</html>

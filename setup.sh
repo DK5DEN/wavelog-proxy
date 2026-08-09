@@ -30,6 +30,8 @@ if [ -f "$CFG" ]; then
   [ -n "$V" ] && SERVER_URL="$V"
   V=$(sed -n 's/.*"server_api_key": *"\([^"]*\)".*/\1/p' "$CFG" | head -1)
   [ -n "$V" ] && SERVER_API_KEY="$V"
+  V=$(sed -n 's/.*"server_v1_key": *"\([^"]*\)".*/\1/p' "$CFG" | head -1)
+  [ -n "$V" ] && SERVER_V1_KEY="$V"
 fi
 
 if [ -z "${LOCAL_DB_PASSWORD:-}" ]; then
@@ -44,8 +46,22 @@ chmod 777 data/config data/uploads data/userdata data/logs 2>/dev/null || true
 # Versions-Kopplung an den Master (geht erst, wenn Server-Zugang konfiguriert ist)
 if [ -n "${SERVER_URL:-}" ] && [ -n "${SERVER_API_KEY:-}" ]; then
   echo ">> Frage Server-Version ab ($SERVER_URL)…"
-  VERSION=$(curl -sf -X POST "$SERVER_URL/api/version" -H 'Content-Type: application/json' \
-    -d "{\"key\":\"$SERVER_API_KEY\"}" | sed -n 's/.*"version":"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}.*/\1/p') || true
+  VERSION="" V1KEY="${SERVER_V1_KEY:-}"
+  case "$SERVER_API_KEY" in
+    wl2_*)
+      # APIv2: Version steht in der system-Statistik (braucht Admin-Rechte
+      # und statistic:read — sonst greift unten der Legacy-Fallback)
+      VERSION=$(curl -sf -H "Authorization: Bearer $SERVER_API_KEY" \
+        "$SERVER_URL/index.php/api/v2/statistic?profile=system" \
+        | sed -n 's/.*"wavelog": *"\([0-9][0-9.]*\)".*/\1/p' | head -1) || true
+      ;;
+    *) V1KEY="${V1KEY:-$SERVER_API_KEY}" ;;
+  esac
+  if [ -z "$VERSION" ] && [ -n "$V1KEY" ]; then
+    # einziger verbliebener v1-Einsatz: Versionsabgleich per Legacy-Key
+    VERSION=$(curl -sf -X POST "$SERVER_URL/api/version" -H 'Content-Type: application/json' \
+      -d "{\"key\":\"$V1KEY\"}" | sed -n 's/.*"version":"\{0,1\}\([0-9][0-9.]*\)"\{0,1\}.*/\1/p') || true
+  fi
   if [ -n "${VERSION:-}" ]; then
     echo ">> Server läuft Wavelog $VERSION — pinne lokales Image darauf"
     set_env WAVELOG_VERSION "$VERSION"
@@ -79,18 +95,13 @@ if docker compose exec -T sync python app.py status >/dev/null 2>&1; then
 else
   cat <<EOF
 
->> Erstinstallation nötig — einmalig im Browser erledigen:
-   1. $PUBLIC/install öffnen
-      DB-Host:     wavelog-db
-      DB-Name:     ${LOCAL_DB_NAME:-wavelog}
-      DB-User:     ${LOCAL_DB_USER:-wavelog}
-      DB-Passwort: $LOCAL_DB_PASSWORD
-   2. Eigenen Benutzer anlegen (gleiches Rufzeichen wie am Server)
-   3. Einloggen, Logbuch anlegen und als aktiv setzen
-   4. Account -> API Keys -> Key mit read/write anlegen
-   5. Usermenü -> "Offline-Sync" anklicken -> Einstellungen: Server-URL, Server-API-Key und den
-      lokalen Key eintragen -> "Server-Bestand übernehmen (Seed)" klicken
-   6. Dieses Script noch einmal ausführen, damit die lokale Wavelog-Version
-      auf die des Servers gepinnt wird
+>> Erstinstallation: $PUBLIC im Browser öffnen — die Seite fragt die
+   Installationsart ab:
+   - Einfach:  nur Rufzeichen (und optional Wunsch-Passwort) eingeben,
+               der Rest läuft automatisch
+   - Experte:  Wavelog-Installer manuell durchklicken (die Seite zeigt die DB-Daten an)
+   Danach im Usermenü "Offline-Sync" -> Einstellungen: Server-URL und Server-API-Key
+   eintragen -> "Server-Bestand übernehmen (Seed)". Anschließend dieses Script erneut
+   ausführen (pinnt die lokale Wavelog-Version auf die des Servers).
 EOF
 fi

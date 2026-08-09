@@ -61,6 +61,12 @@ services:
       - ./sync/app.py:/app/app.py:ro
       - ./sync/inject.js:/app/inject.js:ro
       - ./sync/status.html:/app/status.html:ro
+      - ./sync/setup.html:/app/setup.html:ro
+      # fuer die Versionswahl auf der Setup-Seite: sync tauscht den
+      # wavelog-Container gegen die gewuenschte Image-Version und haelt
+      # WAVELOG_VERSION in der .env aktuell
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.env:/kit/.env
     ports:
       - "127.0.0.1:8086:8086"
     restart: unless-stopped

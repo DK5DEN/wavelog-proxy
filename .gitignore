@@ -1,6 +1,9 @@
-# lokale Laufzeitdaten & Konfiguration (nie einchecken)
-.env
+# Laufzeitdaten der lokalen Instanz: DB, Wavelog-Config, Uploads, Sync-State
+# (state.json) und Sync-Config (config.json enthaelt API-Tokens!)
 data/
-sync/__pycache__/
+
+# Script-verwaltet: DB-Passwort, Image-Version
+.env
+
+__pycache__/
 *.pyc
-seed.sql

@@ -193,8 +193,9 @@
     '  <div class="col-lg-6"><div class="card h-100">',
     '    <div class="card-header d-flex justify-content-between align-items-center">Abweichungen (Edits)',
     '      <button class="btn btn-sm btn-outline-secondary py-0" data-act="diff">jetzt prüfen</button></div>',
-    '    <div class="card-body"><p class="text-body-secondary small">Edits/Löschungen lassen sich über die API',
-    '      nicht übertragen — Unterschiede zwischen lokal und Server werden hier zum manuellen Nachziehen gezeigt.</p>',
+    '    <div class="card-body"><p class="text-body-secondary small">Feld-Änderungen mit eindeutiger Richtung werden',
+    '      automatisch übertragen; Konflikte bleiben hier zur manuellen Entscheidung. Erkannte Löschungen werden erst',
+    '      nach Bestätigung ausgeführt.</p>',
     '      <div id="wlsync-diff">–</div></div></div></div>',
     '</div>',
     '<div class="card mt-3"><div class="card-header">Einstellungen</div><div class="card-body">',
@@ -202,10 +203,26 @@
     '  <div class="row g-2">',
     '    <div class="col-md-6"><label class="form-label mb-0 small">Server-URL</label>',
     '      <input id="wlsync-url" class="form-control form-control-sm" placeholder="https://wavelog.example.org"></div>',
-    '    <div class="col-md-6"><label class="form-label mb-0 small">Server-API-Key (read/write)</label>',
+    '    <div class="col-md-6"><label class="form-label mb-0 small">Server-API-Token (APIv2, wl2_…)</label>',
     '      <input id="wlsync-skey" class="form-control form-control-sm" placeholder="leer = unverändert"></div>',
+    '    <div class="col-md-6"><label class="form-label mb-0 small">Server-Legacy-Key (v1, optional — nur Versionsabgleich)</label>',
+    '      <input id="wlsync-s1key" class="form-control form-control-sm" placeholder="optional"></div>',
     '  </div>',
-    '  <p class="text-body-secondary small mt-1 mb-0">Der lokale API-Key wird automatisch erstellt — nur die Server-Daten eintragen.</p>',
+    '  <p class="text-body-secondary small mt-1 mb-0">Das lokale API-Token wird automatisch erstellt — nur die Server-Daten eintragen.</p>',
+    '  <div class="mt-2"><b class="small">Stationen im Sync</b>',
+    '    <div id="wlsync-stations" class="small mt-1">–</div>',
+    '    <p class="text-body-secondary small mb-0">Abgewählte Server-Stationen werden nicht gesynct und beim nächsten',
+    '      Sync lokal samt QSOs entfernt (der Server bleibt unberührt). Neue Stationen sind automatisch angewählt.',
+    '      Gilt nach „Speichern &amp; testen".</p></div>',
+    '  <div class="mt-2"><b class="small">Was wird gesynct?</b>',
+    '    <div class="small">',
+    '      <label class="form-check d-block mb-0"><input class="form-check-input" type="checkbox" checked disabled> QSOs &amp; Stationen <span class="text-body-secondary">(Basis, immer)</span></label>',
+    '      <label class="form-check d-block mb-0"><input class="form-check-input wlsync-feat" type="checkbox" id="wlsync-f-edits"> Änderungen automatisch übertragen (Edit-Sync)</label>',
+    '      <label class="form-check d-block mb-0"><input class="form-check-input wlsync-feat" type="checkbox" id="wlsync-f-del"> Löschungen erkennen &amp; übernehmen (mit Bestätigung)</label>',
+    '      <label class="form-check d-block mb-0"><input class="form-check-input wlsync-feat" type="checkbox" id="wlsync-f-qsl"> QSL-Bestätigungen (LoTW/eQSL/…) holen</label>',
+    '      <label class="form-check d-block mb-0"><input class="form-check-input wlsync-feat" type="checkbox" id="wlsync-f-ver"> Wavelog-Versionsabgleich</label>',
+    '    </div>',
+    '    <div class="small mt-1 alert alert-secondary py-1 px-2 mb-0" id="wlsync-scopes"></div></div>',
     '  <button class="btn btn-primary btn-sm mt-2" data-act="savecfg">Speichern &amp; testen</button>',
     '  <div id="wlsync-cfgresult" class="small mt-2"></div>',
     '</div></div>',
@@ -286,21 +303,64 @@
       h += "<div class='mb-2'><b>Vermutlich Zeit-Änderung:</b><br>" + d.time_edits.map((x) =>
         esc(x.date) + " " + esc(x.call) + " (" + esc(x.band) + " " + esc(x.mode) + "): lokal " +
         esc(x.zeit_lokal) + " / Server " + esc(x.zeit_server)).join("<br>") + "</div>";
+    const dels = d.deletions || [];
+    if (dels.length) {
+      h += '<div class="alert alert-danger py-2 px-2 mb-2"><b>' + dels.length +
+        ' Löschung(en) erkannt</b> — auf der Gegenseite bereits gelöscht:<br>' +
+        dels.map((x) => (x.action === "delete_local" ? "wird LOKAL gelöscht: " : "wird am SERVER gelöscht: ") + q(x) +
+          ' <span class="text-body-secondary">(' + esc(x.station) + ")</span>").join("<br>") +
+        '<br><button class="btn btn-sm btn-danger mt-2" data-act="deletions">Löschungen übernehmen…</button></div>';
+    }
     if (d.only_local.length)
-      h += "<div class='mb-2'><b>Nur lokal</b> (am Server gelöscht/noch nicht gepusht):<br>" + d.only_local.map(q).join("<br>") + "</div>";
+      h += "<div class='mb-2'><b>Nur lokal</b> (noch nicht gepusht/unbekannt):<br>" + d.only_local.map(q).join("<br>") + "</div>";
     if (d.only_server.length)
-      h += "<div class='mb-2'><b>Nur am Server</b> (lokal gelöscht/noch nicht gepullt):<br>" + d.only_server.map(q).join("<br>") + "</div>";
-    if (!d.diffs.length && !(d.time_edits || []).length && !d.only_local.length && !d.only_server.length)
+      h += "<div class='mb-2'><b>Nur am Server</b> (noch nicht gepullt/unbekannt):<br>" + d.only_server.map(q).join("<br>") + "</div>";
+    if (!d.diffs.length && !(d.time_edits || []).length && !dels.length && !d.only_local.length && !d.only_server.length)
       h += '<span class="text-success">keine Abweichungen 🎉</span>';
     el.innerHTML = h;
+  }
+
+  function updateScopes() {
+    const scopes = ["qso:read", "qso:write", "station:read", "station:write"];
+    if ($("#wlsync-f-del").checked) scopes.push("qso:delete");
+    if ($("#wlsync-f-qsl").checked) scopes.push("confirmation:read");
+    let t = "Benötigte Scopes für das Server-Token: " + scopes.join(", ");
+    if ($("#wlsync-f-ver").checked)
+      t += " — für den Versionsabgleich zusätzlich statistic:read (braucht Admin-Rechte) oder den Server-Legacy-Key";
+    $("#wlsync-scopes").textContent = t;
+  }
+
+  let stationsLoaded = false;
+  async function loadStations() {
+    const el = $("#wlsync-stations");
+    let d;
+    try { d = await (await fetch(withUser("/_sync/api/stations"))).json(); }
+    catch (e) { d = { ok: false, error: "nicht erreichbar" }; }
+    if (!d.ok) {
+      el.innerHTML = '<span class="text-body-secondary">' + esc(d.error || "nicht verfügbar") + "</span>";
+      return;
+    }
+    el.innerHTML = d.stations.map((st) =>
+      '<label class="form-check d-block mb-0"><input class="form-check-input wlsync-stsel" type="checkbox" value="' +
+      esc(st.uuid) + '"' + (st.sync ? " checked" : "") + "> " + esc(st.name) +
+      ' <span class="text-body-secondary">(' + esc(st.callsign) + ")</span></label>"
+    ).join("") || '<span class="text-body-secondary">keine Stationen am Server</span>';
+    stationsLoaded = true;
   }
 
   async function loadCfg() {
     const c = await (await fetch(withUser("/_sync/api/config"))).json();
     $("#wlsync-url").value = c.server_url || "";
-    $("#wlsync-skey").placeholder = c.server_api_key_masked ? "gesetzt (" + c.server_api_key_masked + ") — leer = unverändert" : "API-Key vom Server";
+    $("#wlsync-skey").placeholder = c.server_api_key_masked ? "gesetzt (" + c.server_api_key_masked + ") — leer = unverändert" : "APIv2-Token vom Server (wl2_…)";
+    $("#wlsync-s1key").placeholder = c.server_v1_key_masked ? "gesetzt (" + c.server_v1_key_masked + ") — leer = unverändert" : "optional";
     $("#wlsync-setup-hint").innerHTML = c.configured ? "" :
-      '<div class="alert alert-info py-1 px-2 mb-2 small">Noch nicht konfiguriert — Server-URL und API-Key eintragen und speichern, dann „Server-Bestand übernehmen".</div>';
+      '<div class="alert alert-info py-1 px-2 mb-2 small">Noch nicht konfiguriert — Server-URL und API-Token eintragen und speichern, dann „Server-Bestand übernehmen".</div>';
+    $("#wlsync-f-edits").checked = c.sync_edits !== false;
+    $("#wlsync-f-del").checked = c.sync_deletions !== false;
+    $("#wlsync-f-qsl").checked = c.sync_qsl !== false;
+    $("#wlsync-f-ver").checked = c.sync_version !== false;
+    updateScopes();
+    if (!stationsLoaded) loadStations();
   }
 
   const LABELS = { sync: "Sync", push: "Push", pull: "Pull", diff: "Abweichungs-Check", seed: "Seed", reset: "Reset" };
@@ -326,15 +386,29 @@
   async function saveCfg() {
     const r = await (await fetch(withUser("/_sync/api/config"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: user, server_url: $("#wlsync-url").value, server_api_key: $("#wlsync-skey").value }),
+      body: JSON.stringify({
+        user: user,
+        server_url: $("#wlsync-url").value,
+        server_api_key: $("#wlsync-skey").value,
+        server_v1_key: $("#wlsync-s1key").value,
+        sync_edits: $("#wlsync-f-edits").checked,
+        sync_deletions: $("#wlsync-f-del").checked,
+        sync_qsl: $("#wlsync-f-qsl").checked,
+        sync_version: $("#wlsync-f-ver").checked,
+        ...(stationsLoaded ? { station_exclude: Array.from(page.querySelectorAll(".wlsync-stsel"))
+          .filter((cb) => !cb.checked).map((cb) => cb.value) } : {}),
+      }),
     })).json();
     if (r.error) { $("#wlsync-cfgresult").innerHTML = '<span class="text-danger">' + esc(r.error) + "</span>"; return; }
     const s = r.checks.server, l = r.checks.local;
     $("#wlsync-cfgresult").innerHTML =
-      "Server: " + (s.ok ? '<span class="text-success">OK (Wavelog ' + esc(s.version) + ")</span>" : '<span class="text-danger">Fehler</span> ' + esc(s.error)) +
+      "Server: " + (s.ok ? '<span class="text-success">OK (' + s.stations + " Station(en)" + (s.version ? ", Wavelog " + esc(s.version) : "") + ")</span>" : '<span class="text-danger">Fehler</span> ' + esc(s.error)) +
       " · Lokal: " + (l.ok ? '<span class="text-success">OK (' + l.stations + " Station(en))</span>" : '<span class="text-danger">Fehler</span> ' + esc(l.error)) +
       (r.checks.key_note ? '<br><span class="text-body-secondary">' + esc(r.checks.key_note) + "</span>" : "");
     $("#wlsync-skey").value = "";
+    $("#wlsync-s1key").value = "";
+    stationsLoaded = false;
+    loadStations();
     refresh();
   }
 
@@ -342,6 +416,25 @@
     if (!confirm("Kompletten Server-Bestand in die lokale Instanz übernehmen?")) return;
     await run("seed", $("#wlsync-force").checked ? "&force=1" : "");
   }
+  async function applyDeletions() {
+    let d;
+    try { d = (await (await fetch(withUser("/_sync/api/diff"))).json()).last_diff || {}; } catch (e) { return; }
+    const dels = d.deletions || [];
+    if (!dels.length) return;
+    const lines = dels.map((x) =>
+      "  " + (x.action === "delete_local" ? "LOKAL:   " : "SERVER:  ") +
+      x.date + " " + x.time + "  " + x.call + "  " + x.band + " " + x.mode + "  (" + x.station + ")");
+    const msg = "Diese " + dels.length + " QSO(s) werden ENDGÜLTIG gelöscht:\n\n" +
+      lines.join("\n") +
+      "\n\nLOKAL  = wurde am Server gelöscht, wird jetzt lokal entfernt." +
+      "\nSERVER = wurde lokal gelöscht, wird jetzt am Server entfernt." +
+      "\n\nFortfahren?";
+    if (!confirm(msg)) return;
+    const r = await (await fetch(withUser("/_sync/api/apply_deletions"), { method: "POST" })).json();
+    $("#wlsync-log").textContent = "[Löschungen] " + (r.ok ? "OK" : "teilweise FEHLER") + "\n" + (r.log || []).join("\n");
+    refresh();
+  }
+
   async function runReset() {
     const p = await (await fetch(withUser("/_sync/api/pending"))).json();
     let m = "Profil " + (user || "") + " lokal auf Server-Stand zurücksetzen?\n\nAlle lokalen QSOs, " +
@@ -351,6 +444,10 @@
     await run("reset", "&force=1");
   }
 
+  page.addEventListener("change", (e) => {
+    if (e.target.classList && e.target.classList.contains("wlsync-feat")) updateScopes();
+  });
+
   page.addEventListener("click", (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act;
     if (!act) return;
@@ -358,6 +455,7 @@
     else if (act === "seed") runSeed();
     else if (act === "reset") runReset();
     else if (act === "ack") fetch(withUser("/_sync/api/contest_ack"), { method: "POST" }).then(refresh);
+    else if (act === "deletions") applyDeletions();
     else run(act);
   });
 
